@@ -74,7 +74,6 @@ class MagnitParse:
         return result
 
     def _get_response(self, url):
-        # TODO: написать обработку ошибок
         response = requests.get(url)
         return response
 
