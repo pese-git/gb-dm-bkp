@@ -9,31 +9,70 @@ class Database:
         models.Base.metadata.create_all(bind=engine)
         self.maker = sessionmaker(bind=engine)
 
-    def _get_or_create(self, session, model, u_field, u_value, **data):
-        db_data = session.query(model).filter(u_field == data[u_value]).first()
+    def _get_or_create(self, session, model, uniq_field, uniq_value, **data):
+        db_data = session.query(model).filter(uniq_field == uniq_value).first()
         if not db_data:
             db_data = model(**data)
+            session.add(db_data)
+            try:
+                session.commit()
+            except Exception as exc:
+                print(exc)
+                session.rollback()
         return db_data
+
+    def _get_or_create_comments(self, session, data: list) -> list:
+        result = []
+
+        for comment in data:
+            comment_author = self._get_or_create(
+                session,
+                models.Author,
+                models.Author.url,
+                comment["comment"]["user"]["url"],
+                name=comment["comment"]["user"]["full_name"],
+                url=comment["comment"]["user"]["url"],
+            )
+            db_comment = self._get_or_create(
+                session,
+                models.Comment,
+                models.Comment.id,
+                comment["comment"]["id"],
+                **comment["comment"],
+                author=comment_author,
+            )
+            result.append(db_comment)
+            result.extend(self._get_or_create_comments(session, comment["comment"]["children"]))
+
+        return result
 
     def create_post(self, data):
         session = self.maker()
+        comments = self._get_or_create_comments(session, data["comments_data"])
 
         author = self._get_or_create(
-            session, models.Author, models.Author.url, "url", **data["author"]
+            session, models.Author, models.Author.url, data["author"]["url"], **data["author"]
+        )
+
+        tags = map(
+            lambda tag_data: self._get_or_create(
+                session, models.Tag, models.Tag.url, tag_data["url"], **tag_data
+            ),
+            data["tags"],
         )
 
         # post = models.Post(**data['post_data'], author=author)
         post = self._get_or_create(
-            session, models.Post, models.Post.url, "url", **data["post_data"], author=author
+            session,
+            models.Post,
+            models.Post.url,
+            data["post_data"]["id"],
+            **data["post_data"],
+            author=author,
         )
-        post.tags.extend(
-            map(
-                lambda tag_data: self._get_or_create(
-                    session, models.Tag, models.Tag.url, "url", **tag_data
-                ),
-                data["tags"],
-            )
-        )
+
+        post.tags.extend(tags)
+        post.comments.extend(comments)
         session.add(post)
         try:
             session.commit()
