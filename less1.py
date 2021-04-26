@@ -2,6 +2,7 @@ from pathlib import Path
 import timer
 import json
 import requests
+from urllib.parse import urlparse
 
 
 class Parse5ka:
@@ -15,8 +16,11 @@ class Parse5ka:
         }
 
     def _get_response(self, url: str):
+        old_netloc_url = urlparse(url).netloc
+        new_netloc_url = self._start_url.netloc
+        burl = url.replace(old_netloc_url, new_netloc_url)
         while True:
-            response = requests.get(url, params=None, headers=self._headers)
+            response = requests.get(burl, params=None, headers=self._headers)
             if response.status_code == 200:
                 return response
             timer.sleep(0.5)
