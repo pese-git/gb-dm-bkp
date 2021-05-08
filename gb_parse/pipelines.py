@@ -6,8 +6,34 @@
 
 # useful for handling different item types with a single interface
 # from itemadapter import ItemAdapter
+from .settings import BOT_NAME
+from .settings import BOT_NAME_HH
+from pymongo import MongoClient
 
 
 class GbParsePipeline:
     def process_item(self, item, spider):
+        return item
+
+
+class GbMongoPipeline:
+    def __init__(self):
+        client = MongoClient()
+        self.db = client[BOT_NAME]
+
+    def process_item(self, item, spider):
+        self.db[spider.name].insert_one(item)
+        return item
+
+
+class GbParseHHMongoPipline:
+    def __init__(self):
+        client = MongoClient()
+        self.db = client[BOT_NAME_HH]
+
+    def process_item(self, item, spider):
+        if item.get("employer_name"):
+            self.db["employer_info"].insert_one(item)
+        else:
+            self.db["vacancy"].insert_one(item)
         return item

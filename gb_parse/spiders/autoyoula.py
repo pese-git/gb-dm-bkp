@@ -1,8 +1,6 @@
-import scrapy
 import pymongo
-import re
-from urllib.parse import urljoin, unquote
-from base64 import b64decode
+import scrapy
+from ..loaders import AutoyoulaLoader
 
 
 class AutoyoulaSpider(scrapy.Spider):
@@ -10,99 +8,49 @@ class AutoyoulaSpider(scrapy.Spider):
     allowed_domains = ["auto.youla.ru"]
     start_urls = ["https://auto.youla.ru/"]
 
-    _re_pattern_dealer_check = re.compile(r"sellerLink%22%2Cnull%2C%22type")
-    _re_pattern_user = re.compile(r"youlaId%22%2C%22([a-zA-Z|\d]+)%22%2C%22avatar")
-    _re_pattern_dealer = re.compile(r"sellerLink%22%2C%22([\W|a-zA-Z|\d]+)%22%2C%22type")
+    _xpath_selectors = {
+        "brands": '//div[@data-target="transport-main-filters"]'
+        '//div[contains(@class,"ColumnItemList_column")]'
+        '//a[@data-target="brand"]/@href',
+        "pagination": '//div[contains(@class, "Paginator_block")]'
+        '//a[@data-target-id="button-link-serp-paginator"]/@href',
+        "car": '//article[@data-target="serp-snippet"]'
+        '//a[@data-target="serp-snippet-title"]/@href',
+    }
+    _xpath_data_selectors = {
+        "title": "//div[@data-target='advert-title']/text()",
+        "price": "//div[@data-target='advert-price']/text()",
+        "photos": "//div[contains(@class, 'PhotoGallery_block')]//figure/picture/img/@src",
+        "characteristics": "//div[contains(@class, 'AdvertCard_specs')]"
+        "/div/div[contains(@class, 'AdvertSpecs_row')]",
+        "description": "//div[@data-target='advert-info-descriptionFull']/text()",
+        "author": '//body/script[contains(text(), "window.transitState = decodeURIComponent")]',
+    }
 
-    _re_pattern_img = re.compile(
-        r"%2Fstatic.am%2Fautomobile_m3%2Fdocument%2F([a-zA-z|\d|\%]+).jpg"
-    )
-
-    _re_pattern_phone = re.compile(r"phone%22%2C%22([a-zA-Z|\d|%]+)%22%2C%22time")
-
-    _base_image_url = "https://static.am/automobile_m3/document/"
-
-    def __init__(self):
-        db_client = pymongo.MongoClient("mongodb://localhost:27017")
-        self.db = db_client["gb_data_mining_auto_youla_21_04_2021"]
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.db_client = pymongo.MongoClient()
 
     def _get_follow(self, response, selector_str, callback):
-        for itm in response.css(selector_str):
-            url = itm.attrib["href"]
-            yield response.follow(url, callback=callback)
+        for itm in response.xpath(selector_str):
+            yield response.follow(itm, callback=callback)
 
     def parse(self, response, *args, **kwargs):
         yield from self._get_follow(
-            response,
-            ".TransportMainFilters_brandsList__2tIkv .ColumnItemList_container__5gTrc .ColumnItemList_item__32nYI a.blackLink",
-            self._brand_parse,
+            response, self._xpath_selectors["brands"], self.brand_parse,
         )
 
-    def _brand_parse(self, response):
+    def brand_parse(self, response):
         yield from self._get_follow(
-            response, ".Paginator_block__2XAPy .Paginator_button__u1e7D", self._brand_parse
+            response, self._xpath_selectors["pagination"], self.brand_parse
         )
-
         yield from self._get_follow(
-            response,
-            "article.SerpSnippet_snippet__3O1t2 a.SerpSnippet_name__3F7Yu.blackLink",
-            self._car_parse,
+            response, self._xpath_selectors["car"], self.car_parse,
         )
 
-    def _car_parse(self, response):
-        characteristics = response.css(
-            "div.AdvertCard_specs__2FEHc .AdvertSpecs_row__ljPcX *::text"
-        ).getall()
-        car_dict = {
-            "title": response.css(".AdvertCard_advertTitle__1S1Ak::text").get(),
-            "price": float(
-                response.css("div.AdvertCard_price__3dDCr::text").get().replace("\u2009", "")
-            ),
-            "characteristics": {
-                characteristics[i]: characteristics[i + 1]
-                for i in range(0, len(characteristics), 2)
-            },
-            "description": response.css(
-                "div.AdvertCard_descriptionWrap__17EU3 .AdvertCard_descriptionInner__KnuRi::text"
-            ).get(),
-        }
-        car_dict.update(self._get_owner_info(response))
-        self._save(car_dict)
-
-    def _get_owner_info(self, response):
-        marker = "window.transitState = decodeURIComponent"
-        for script in response.css("script"):
-            try:
-                if marker in script.css("::text").extract_first():
-                    car_dict_update = {
-                        "owner_url": self._get_owner_url(response, script),
-                        "image_urls": self._get_image(script),
-                        "phone_number": self._get_phone_number(script),
-                    }
-                    return car_dict_update
-            except TypeError:
-                pass
-
-    def _get_owner_url(self, response, script):
-        if re.findall(self._re_pattern_dealer_check, script.css("::text").extract_first()):
-            owner_id = re.findall(self._re_pattern_user, script.css("::text").extract_first())
-            return response.urljoin(f"/user/{owner_id[0]}")
-        else:
-            owner_id = re.findall(self._re_pattern_dealer, script.css("::text").extract_first())
-            return urljoin(self.start_urls[0], owner_id[0].replace("%2F", "/"))
-
-    def _get_image(self, script) -> list:
-        img_list = re.findall(self._re_pattern_img, script.css("::text").extract_first())
-        return [
-            urljoin(self._base_image_url, url.replace("%2F", "/") + ".jpg") for url in img_list
-        ]
-
-    def _get_phone_number(self, script):
-        phone = unquote(
-            re.findall(self._re_pattern_phone, script.css("::text").extract_first())[0]
-        )
-        return b64decode(b64decode(phone)).decode()
-
-    def _save(self, data):
-        collection = self.db["cars"]
-        collection.insert_one(data)
+    def car_parse(self, response):
+        loader = AutoyoulaLoader(response=response)
+        loader.add_value("url", response.url)
+        for key, xpath in self._xpath_data_selectors.items():
+            loader.add_xpath(key, xpath)
+        yield loader.load_item()
